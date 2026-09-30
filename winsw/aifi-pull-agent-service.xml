@@ -1,0 +1,22 @@
+<service>
+  <id>AifiPullAgent</id>
+  <name>AIFI Pull Agent</name>
+  <description>Receives "study ready" KOS notifications, retrieves the studies with WADO-RS through the DICOM Web Proxy and C-STOREs them to the destination.</description>
+  <executable>java</executable>
+  <!-- ExitOnOutOfMemoryError: a JVM in trouble exits and is restarted instead of limping on. -->
+  <arguments>-Dfile.encoding=UTF-8 -XX:+ExitOnOutOfMemoryError -jar "%BASE%\aifi-pull-agent.jar" run</arguments>
+  <!-- config\, logs\ and spool\ resolve relative to the install folder. -->
+  <workingdirectory>%BASE%</workingdirectory>
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+  <logpath>%BASE%\logs</logpath>
+  <stoptimeout>60 sec</stoptimeout>
+  <!-- Restart after every crash; the last entry repeats. The spool makes a restart lossless. -->
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="60 sec"/>
+  <resetfailure>1 hour</resetfailure>
+</service>

@@ -1,0 +1,83 @@
+# AIFI Pull Agent - configuration
+#
+#   AIFI gateway --KOS "study ready"--> (PACS routing) --C-STORE--> pull agent
+#   pull agent --WADO-RS (HTTPS)--> DICOM Web Proxy B --passthrough--> DICOM Web Proxy A
+#   pull agent --C-STORE--> destination PACS / AI
+#
+# Changes take effect after a service restart. Run "aifi-pull-agent check" after every change.
+# Secrets may be typed in plaintext: at the next start they are replaced by an encrypted
+# value (enc:v1:...) using config\pull-agent.key. Relative paths are relative to the
+# installation folder. Full walkthrough: docs\HANDLEIDING.md
+
+# Where the KOS pull requests arrive (only Key Object Selection documents are accepted).
+listener:
+  bindAddress: 0.0.0.0
+  port: 11300
+  aeTitle: AIFIPULL
+  allowedCallingAeTitles: []        # e.g. [JIVEX_ROUTE]; empty = any caller (not recommended)
+  tls:
+    enabled: false
+    keystorePath: ""                # PKCS#12 with this agent's certificate + key
+    keystorePassword: ""            # encrypted on start
+    trustCertPath: ""               # PEM: certificates / CA of the senders
+    requireClientCert: true
+
+# The DICOM Web Proxy the studies are retrieved through (proxy B, in WADO_PASSTHROUGH mode).
+# Register this agent on that proxy as an API client (or create an API key).
+source:
+  baseUrl: https://127.0.0.1:8484/dicom-web
+  authMode: OAUTH2                  # OAUTH2 (client credentials) | API_KEY (X-Api-Key header)
+  tokenEndpoint: ""                 # empty = https://<host:port of baseUrl>/auth/token
+  clientId: ""
+  clientSecret: ""                  # encrypted on start
+  apiKey: ""                        # API_KEY mode; encrypted on start
+  trustCertPath: ""                 # proxy certificate, e.g. C:\dicom-proxy\certs\http\fullchain.pem
+  clientKeystorePath: ""            # only if the proxy requires a client certificate
+  clientKeystorePassword: ""        # encrypted on start
+  connectTimeoutMs: 10000
+  responseTimeoutMs: 540000         # proxy A may first C-MOVE the study from its PACS
+  instanceFetchThreshold: 50        # up to this many missing instances are fetched one by one
+
+# Where the studies go, chosen by the route name in the KOS ("AIFI route=<name>").
+# route "*" catches every route without its own entry.
+destinations:
+  - name: ai-pacs
+    route: "*"
+    host: ""
+    port: 104
+    aeTitle: ""
+    callingAeTitle: AIFIPULL
+    connectTimeoutMs: 5000
+    associationTimeoutMs: 30000
+    responseTimeoutMs: 540000
+    tls:
+      enabled: false
+      keystorePath: ""
+      keystorePassword: ""          # encrypted on start
+      trustCertPath: ""
+      verifyHostname: true
+#  - name: thorax-ai
+#    route: ai-thorax
+#    host: 10.8.0.30
+#    port: 104
+#    aeTitle: THORAX_AI
+#    callingAeTitle: AIFIPULL
+
+workers: 2                          # pull jobs processed in parallel
+
+retry:
+  maxAttempts: 96                   # then FAILED (kept; "aifi-pull-agent retry" re-queues); 0 = forever
+  initialDelaySeconds: 30           # doubles per attempt ...
+  maxDelaySeconds: 1800             # ... up to 30 minutes (about 2 days in total)
+
+spool:
+  dir: spool                        # holds studies only while they are in transit
+  minFreeMb: 2048                   # below this, new KOS requests are refused (status A700)
+  failedRetentionDays: 30
+
+logging:
+  dir: logs
+  level: INFO
+  maxFileMb: 20
+  maxFiles: 20
+  revealIdentifiers: true           # the agent only sees pseudonymized identifiers

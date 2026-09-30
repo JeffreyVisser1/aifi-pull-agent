@@ -1,0 +1,58 @@
+# DICOM Web Proxy B - ontvangkant (bij de AIFI pull-agent)
+#
+# Rol in het pull-model:
+#   pull-agent --WADO-RS GET /studies/{uid}/series/{uid}--> B --passthrough (HTTPS + OAuth2)--> A
+#   B bewaart niets: elk verzoek gaat live door naar A en het antwoord gaat terug naar de agent.
+#
+# Alleen de instellingen die afwijken van de standaard staan hier. Voer ze in via de
+# admin-pagina (Settings) of neem ze over in config\config.yaml terwijl de proxy gestopt is.
+# Herstart de proxy daarna.
+#
+# Vervang alle <...>-waarden.
+
+http:
+  port: 8484
+  bindAddress: "0.0.0.0"            # bereikbaar voor de pull-agent (127.0.0.1 als de agent op dezelfde server draait)
+  tls:
+    enabled: true
+    # Het certificaat MOET het IP-adres of de naam noemen waarmee de pull-agent deze proxy aanspreekt.
+    certPath: "./certs/http/fullchain.pem"
+    keyPath: "./certs/http/privkey.pem"
+    keyPassword: ""
+    protocols:
+      - "TLSv1.3"
+      - "TLSv1.2"                   # optioneel; de pull-agent spreekt TLS 1.3
+
+pacs:
+  retrieveMode: WADO_PASSTHROUGH    # ophalen = doorsturen naar proxy A
+
+wadoPassthrough:
+  baseUrl: "https://<IP-A>:8484/dicom-web"
+  qidoEnabled: true                 # QIDO (bijv. aantal instances controleren) ook via A
+  responseTimeoutMs: 540000         # grote studie: A doet eerst een C-MOVE uit JiveX
+  auth:
+    mode: OAUTH2_CC
+    tokenEndpoint: "https://<IP-A>:8484/auth/token"
+    clientId: "proxy-b"
+    clientSecret: "<secret van client proxy-b op A>"   # wordt bij opslaan versleuteld
+  tls:
+    enabled: true
+    trustStorePath: "./certs/upstream/proxy-a.pem"     # certificaat van A (of de CA die het uitgaf)
+    verifyHostname: true            # het certificaat van A moet <IP-A> noemen
+
+# B stuurt in dit model niets zelf door; de pull-agent haalt op en stuurt door.
+uploadTarget:
+  enabled: false
+
+bsnRewrite:
+  enabled: false                    # anders eist B een X-Patient-BSN-header bij elk verzoek
+
+# Hoe de pull-agent zich bij B meldt: OAuth2 client credentials (aanbevolen).
+# Maak op B's admin-pagina (Clients) een client aan, bv. "pull-agent", en zet id + secret in
+# source.clientId / source.clientSecret van config\pull-agent.yaml.
+# (Alternatief: X-Api-Key - wadoAcceptApiKey: true en source.authMode: API_KEY.)
+auth:
+  wadoAcceptJwt: true
+  wadoAcceptApiKey: false
+  allowAnonymous: false
+  wadoAllowedCidrs: ["<IP-pull-agent>/32"]   # alleen de pull-agent mag ophalen
