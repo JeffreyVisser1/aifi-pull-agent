@@ -25,7 +25,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.logging.Logger;
 
 /**
- * DICOM listener for "study ready" KOS notifications. Only the Key Object Selection
+ * DICOM listener for the KOS pull requests (routed by JiveX). Only the Key Object Selection
  * Document Storage SOP class (and Verification) is accepted. A KOS is acknowledged with
  * Success only after its job is stored durably; a re-sent KOS is acknowledged again without
  * creating a second job.
@@ -94,6 +94,10 @@ public final class KosScp {
         KosManifest m;
         try {
             m = KosManifest.parse(kos);
+            if (!m.fromAifi && !cfg.acceptAnyKos) {
+                throw new IllegalArgumentException("not a pull request of the AIFI gateway (no \"AIFI\" Manufacturer, "
+                        + "Series Description or Key Object Description); set listener.acceptAnyKos if the PACS removes them");
+            }
         } catch (IllegalArgumentException e) {
             LOG.warning("Refusing KOS from " + as.getCallingAET() + ": " + e.getMessage());
             throw new DicomServiceException(Status.CannotUnderstand, e.getMessage());
@@ -113,9 +117,9 @@ public final class KosScp {
             LOG.info("KOS " + m.kosUid + " received again from " + as.getCallingAET() + " - job already exists");
             return;
         }
-        LOG.info("[" + (m.route.isEmpty() ? "-" : m.route) + "] pull request received from " + as.getCallingAET()
-                + ": StudyInstanceUID " + m.studyUid + ", " + m.instanceCount() + " instance(s) in "
-                + m.series.size() + " series (job " + m.kosUid + ")");
+        LOG.info("[" + (m.route.isEmpty() ? "?" : m.route) + "] pull request received from " + as.getCallingAET()
+                + ": StudyInstanceUID " + m.studyUid + (m.expected > 0 ? ", " + m.expected + " instance(s)" : "")
+                + (m.route.isEmpty() ? ", route read from the instances" : "") + " (job " + m.kosUid + ")");
         listener.onJob(m);
     }
 

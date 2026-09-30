@@ -66,7 +66,7 @@ public final class Scheduler implements KosScp.Listener {
 
     @Override
     public void onJob(KosManifest m) {
-        schedule(m.kosUid, 0);
+        schedule(m.kosUid, cfg.retry.firstAttemptDelaySeconds * 1000L);
     }
 
     private void schedule(String job, long delayMs) {

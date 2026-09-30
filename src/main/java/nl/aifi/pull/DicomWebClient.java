@@ -20,9 +20,8 @@ import java.util.Map;
 import java.util.logging.Logger;
 
 /**
- * WADO-RS client for the receiving DICOM Web Proxy. Same transport policy as the gateway's
- * STOW client: HTTPS only, TLS 1.3/1.2 AEAD suites, certificate and host name verified, no
- * system proxy, no redirects. Authentication: OAuth2 client credentials (JWT, cached, renewed
+ * WADO-RS client for the receiving DICOM Web Proxy. Transport policy: HTTPS only, TLS 1.3/1.2
+ * AEAD suites, certificate and host name verified, no system proxy, no redirects. Authentication: OAuth2 client credentials (JWT, cached, renewed
  * once on a 401) or an X-Api-Key header. Secrets and tokens are never logged.
  */
 public final class DicomWebClient {

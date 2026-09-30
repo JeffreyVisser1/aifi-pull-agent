@@ -29,7 +29,7 @@ pacs:
 wadoPassthrough:
   baseUrl: "https://<IP-A>:8484/dicom-web"
   qidoEnabled: true                 # QIDO (bijv. aantal instances controleren) ook via A
-  responseTimeoutMs: 540000         # grote studie: A doet eerst een C-MOVE uit JiveX
+  responseTimeoutMs: 540000         # grote studie: A doet eerst een C-MOVE uit de gateway-pool
   auth:
     mode: OAUTH2_CC
     tokenEndpoint: "https://<IP-A>:8484/auth/token"

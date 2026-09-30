@@ -37,6 +37,12 @@ public final class Config {
         public String aeTitle = "AIFIPULL";
         public List<String> allowedCallingAeTitles = new ArrayList<>();
         public DicomTls tls = new DicomTls();
+        /**
+         * false: only KOS objects of the AIFI gateway are accepted (Manufacturer "AIFI ...",
+         * Series Description or Key Object Description "AIFI route=..."); other KOS objects
+         * that a PACS routing rule forwards by mistake are refused.
+         */
+        public boolean acceptAnyKos = false;
     }
 
     /** DICOM TLS (BCP 195); see the gateway manual. */
@@ -64,7 +70,7 @@ public final class Config {
         public String clientKeystorePassword = "";
         public int connectTimeoutMs = 10_000;
         public int responseTimeoutMs = 540_000;
-        /** Missing instances up to this number are fetched one by one instead of the whole series again. */
+        /** Not used since 1.1 (whole studies are retrieved); still accepted so older files load. */
         public int instanceFetchThreshold = 50;
     }
 
@@ -84,6 +90,8 @@ public final class Config {
     }
 
     public static final class Retry {
+        /** Wait before the first retrieval: the gateway pseudonymizes the study after sending the KOS. */
+        public int firstAttemptDelaySeconds = 10;
         /** Attempts before a job is parked as FAILED (0 = retry forever). */
         public int maxAttempts = 96;
         public int initialDelaySeconds = 30;
@@ -281,6 +289,7 @@ public final class Config {
         }
         if (workers < 1 || workers > 16) e.add("workers must be 1..16");
         if (retry.maxAttempts < 0) e.add("retry.maxAttempts must be 0 (forever) or more");
+        if (retry.firstAttemptDelaySeconds < 0) e.add("retry.firstAttemptDelaySeconds must be 0 or more");
         if (retry.initialDelaySeconds < 1 || retry.maxDelaySeconds < retry.initialDelaySeconds) {
             e.add("retry: need 1 <= initialDelaySeconds <= maxDelaySeconds");
         }

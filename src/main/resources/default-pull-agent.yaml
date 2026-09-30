@@ -1,7 +1,8 @@
 # AIFI Pull Agent - configuration
 #
-#   AIFI gateway --KOS "study ready"--> (PACS routing) --C-STORE--> pull agent
+#   AIFI gateway --KOS--> JiveX --pseudonymized KOS (routing)--C-STORE--> pull agent
 #   pull agent --WADO-RS (HTTPS)--> DICOM Web Proxy B --passthrough--> DICOM Web Proxy A
+#   DICOM Web Proxy A --C-MOVE--> AIFI gateway pool
 #   pull agent --C-STORE--> destination PACS / AI
 #
 # Changes take effect after a service restart. Run "aifi-pull-agent check" after every change.
@@ -21,6 +22,7 @@ listener:
     keystorePassword: ""            # encrypted on start
     trustCertPath: ""               # PEM: certificates / CA of the senders
     requireClientCert: true
+  acceptAnyKos: false               # false: only KOS objects with an AIFI mark (Manufacturer "AIFI ...")
 
 # The DICOM Web Proxy the studies are retrieved through (proxy B, in WADO_PASSTHROUGH mode).
 # Register this agent on that proxy as an API client (or create an API key).
@@ -35,11 +37,11 @@ source:
   clientKeystorePath: ""            # only if the proxy requires a client certificate
   clientKeystorePassword: ""        # encrypted on start
   connectTimeoutMs: 10000
-  responseTimeoutMs: 540000         # proxy A may first C-MOVE the study from its PACS
-  instanceFetchThreshold: 50        # up to this many missing instances are fetched one by one
+  responseTimeoutMs: 540000         # proxy A first C-MOVEs the study from the gateway pool
 
-# Where the studies go, chosen by the route name in the KOS ("AIFI route=<name>").
-# route "*" catches every route without its own entry.
+# Where the studies go, chosen by the route name: from the KOS ("AIFI route=<name>"), or, when
+# the PACS removed it there, from the retrieved instances. route "*" catches every route
+# without its own entry.
 destinations:
   - name: ai-pacs
     route: "*"
@@ -66,6 +68,7 @@ destinations:
 workers: 2                          # pull jobs processed in parallel
 
 retry:
+  firstAttemptDelaySeconds: 10      # the gateway pseudonymizes the study right after sending the KOS
   maxAttempts: 96                   # then FAILED (kept; "aifi-pull-agent retry" re-queues); 0 = forever
   initialDelaySeconds: 30           # doubles per attempt ...
   maxDelaySeconds: 1800             # ... up to 30 minutes (about 2 days in total)

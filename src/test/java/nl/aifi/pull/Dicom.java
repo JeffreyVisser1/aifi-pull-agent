@@ -38,6 +38,13 @@ final class Dicom {
         try (ServerSocket s = new ServerSocket(0)) { return s.getLocalPort(); }
     }
 
+    /** A pooled instance as the gateway 2.0 serves it, with its route name. */
+    static Attributes ct(String study, String series, String sop, String route) {
+        Attributes a = ct(study, series, sop);
+        a.setString(Puller.ROUTE_CREATOR, Puller.ROUTE_TAG, VR.LO, route);
+        return a;
+    }
+
     static Attributes ct(String study, String series, String sop) {
         Attributes a = new Attributes();
         a.setString(Tag.SOPClassUID, VR.UI, UID.CTImageStorage);
@@ -59,9 +66,13 @@ final class Dicom {
         return a;
     }
 
-    /** A "study ready" KOS as the AIFI gateway 1.2 writes it. */
+    /**
+     * A pull request KOS: with {@code route} as the gateway writes it; with {@code route == null}
+     * as JiveX forwards it after its profile removed the Content Sequence and Series Description.
+     */
     static Attributes kos(String kosUid, String route, String study, Map<String, List<String>> seriesToSops) {
         Attributes k = new Attributes();
+        k.setString(Tag.Manufacturer, VR.LO, "AIFI Anonymization Gateway");
         k.setString(Tag.SOPClassUID, VR.UI, UID.KeyObjectSelectionDocumentStorage);
         k.setString(Tag.SOPInstanceUID, VR.UI, kosUid);
         k.setString(Tag.StudyInstanceUID, VR.UI, study);
@@ -88,6 +99,8 @@ final class Dicom {
         }
         ev.add(st);
         k.setString(Tag.ValueType, VR.CS, "CONTAINER");
+        if (route == null) return k;
+        k.setString(Tag.SeriesDescription, VR.LO, "AIFI route=" + route);
         Sequence content = k.newSequence(Tag.ContentSequence, 1);
         Attributes text = new Attributes();
         text.setString(Tag.RelationshipType, VR.CS, "CONTAINS");

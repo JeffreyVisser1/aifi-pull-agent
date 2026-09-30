@@ -1,6 +1,7 @@
 package nl.aifi.pull;
 
 import org.dcm4che3.data.Attributes;
+import org.dcm4che3.data.Tag;
 import org.dcm4che3.io.DicomInputStream;
 import org.junit.jupiter.api.Test;
 
@@ -20,28 +21,53 @@ class UnitTest {
 
     // ── KOS from the real gateway ────────────────────────────────────────────
 
-    @Test
-    void readsTheKosTheGatewayWrites() throws Exception {
-        Attributes kos;
-        try (DicomInputStream in = new DicomInputStream(getClass().getResourceAsStream("/gateway-1.2-kos.dcm"))) {
+    private static Attributes read(String resource) throws Exception {
+        try (DicomInputStream in = new DicomInputStream(UnitTest.class.getResourceAsStream(resource))) {
             in.readFileMetaInformation();
-            kos = in.readDataset();
+            return in.readDataset();
         }
-        KosManifest m = KosManifest.parse(kos);
+    }
+
+    @Test
+    void readsTheGatewayKosAfterJivexPseudonymizedIt() throws Exception {
+        // gateway 2.0 KOS trigger, then the JiveX-style profile: Content Sequence and Series
+        // Description removed, evidence UIDs re-mapped, study UID = JiveX pseudonym
+        KosManifest m = KosManifest.parse(read("/jivex-forwarded-kos.dcm"));
+        assertEquals("1.2.276.0.50.10528480.99", m.studyUid);
+        assertEquals("", m.route, "removed by the profile: read from the instances instead");
+        assertEquals(3, m.expected, "counted in the evidence sequence");
+        assertTrue(m.fromAifi, "the Manufacturer survives");
+    }
+
+    @Test
+    void readsTheKosOfGateway12() throws Exception {
+        KosManifest m = KosManifest.parse(read("/gateway-1.2-kos.dcm"));
         assertEquals("1.2.276.0.50.10528480.99", m.studyUid);
         assertEquals("ai-thorax", m.route);
-        assertEquals(3, m.instanceCount());
-        assertEquals(Map.of("2.25.11", Set.of("2.25.111", "2.25.112"), "2.25.12", Set.of("2.25.121")), m.series);
+        assertEquals(3, m.expected);
+        assertTrue(m.fromAifi);
+    }
+
+    @Test
+    void routeFallsBackToTheSeriesDescription() {
+        Attributes k = Dicom.kos("2.25.1", "ai-mamma", "1.2.3", Map.of("1.2.3.1", List.of("2.25.9")));
+        k.remove(Tag.ContentSequence);
+        KosManifest m = KosManifest.parse(k);
+        assertEquals("ai-mamma", m.route);
+        assertEquals(1, m.expected);
     }
 
     @Test
     void refusesObjectsThatAreNoPullRequest() {
         Attributes ct = Dicom.ct("1.2.3", "1.2.3.1", "1.2.3.1.1");
         assertThrows(IllegalArgumentException.class, () -> KosManifest.parse(ct));
-        Attributes empty = Dicom.kos("2.25.1", "main", "1.2.3", Map.of("1.2.3.1", List.of()));
-        assertThrows(IllegalArgumentException.class, () -> KosManifest.parse(empty), "no instances");
-        Attributes bad = Dicom.kos("2.25.1", "main", "1.2.3", Map.of("1.2.3.1", List.of("../../etc")));
-        assertThrows(IllegalArgumentException.class, () -> KosManifest.parse(bad), "UIDs become file names: must be UIDs");
+        Attributes noStudy = Dicom.kos("2.25.1", "main", "1.2.3", Map.of("1.2.3.1", List.of("2.25.9")));
+        noStudy.setString(Tag.StudyInstanceUID, org.dcm4che3.data.VR.UI, "../../etc");
+        assertThrows(IllegalArgumentException.class, () -> KosManifest.parse(noStudy), "UIDs become file names: must be UIDs");
+        Attributes badRoute = Dicom.kos("2.25.1", "AI Thorax/..", "1.2.3", Map.of("1.2.3.1", List.of("2.25.9")));
+        assertThrows(IllegalArgumentException.class, () -> KosManifest.parse(badRoute));
+        Attributes empty = Dicom.kos("2.25.1", null, "1.2.3", Map.of());
+        assertEquals(0, KosManifest.parse(empty).expected, "no count: the whole study, however large");
     }
 
     // ── multipart ────────────────────────────────────────────────────────────

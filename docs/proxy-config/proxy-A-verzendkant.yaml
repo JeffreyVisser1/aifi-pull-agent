@@ -1,8 +1,8 @@
 # DICOM Web Proxy A - verzendkant (bij de AIFI gateway)
 #
-# Rol in het pull-model:
-#   AIFI gateway --STOW-RS--> A --uploadTarget C-STORE--> JiveX (gepseudonimiseerde studies)
-#   proxy B --WADO-RS (passthrough)--> A --C-MOVE--> JiveX --C-STORE--> A (scp) --> B
+# Rol in het pull-model (gateway 2.0):
+#   proxy B --WADO-RS (passthrough)--> A --C-MOVE--> AIFI gateway pool --C-STORE--> A (scp) --> B
+#   De AIFI gateway is het "PACS" van proxy A. A ontvangt geen STOW meer en levert niets af.
 #
 # Alleen de instellingen die afwijken van de standaard staan hier. Voer ze in via de
 # admin-pagina (Settings) of neem ze over in config\config.yaml terwijl de proxy gestopt is.
@@ -12,11 +12,11 @@
 
 http:
   port: 8484
-  bindAddress: "0.0.0.0"            # bereikbaar voor de gateway en voor proxy B (niet 127.0.0.1)
+  bindAddress: "0.0.0.0"            # bereikbaar voor proxy B (niet 127.0.0.1)
   tls:
     enabled: true
-    # Het certificaat MOET het IP-adres of de naam noemen waarmee de gateway en proxy B
-    # deze proxy aanspreken (Subject Alternative Name), bijv. IP:<IP-A>.
+    # Het certificaat MOET het IP-adres of de naam noemen waarmee proxy B deze proxy
+    # aanspreekt (Subject Alternative Name), bijv. IP:<IP-A>.
     certPath: "./certs/http/fullchain.pem"
     keyPath: "./certs/http/privkey.pem"
     keyPassword: ""
@@ -24,29 +24,24 @@ http:
       - "TLSv1.3"
       - "TLSv1.2"                   # alleen nodig als een client geen TLS 1.3 spreekt
 
-# Waar A studies ophaalt als proxy B erom vraagt: de PACS met de gepseudonimiseerde studies.
+# Waar A studies ophaalt als proxy B erom vraagt: de pool van de AIFI gateway.
+# Moet overeenkomen met pool: in gateway.yaml.
 pacs:
   retrieveMode: CMOVE
-  host: "<JiveX-host>"
-  port: <JiveX-DICOM-poort>
-  aeTitle: "<JiveX-AE-titel>"
-  callingAeTitle: "DICOMPROXY_A"
+  host: "<IP-gateway>"
+  port: 11120                       # pool.port
+  aeTitle: "AIFIPOOL"               # pool.aeTitle
+  callingAeTitle: "DICOMPROXY_A"    # pool.proxies[].callingAeTitle
 
-# Ontvangt de C-STOREs van de C-MOVE hierboven. Registreer in JiveX een DICOM-bestemming:
-#   AE DICOMPROXY_A, host <IP-A>, poort 9999  (anders kan JiveX de C-MOVE niet uitvoeren).
+# Ontvangt de C-STOREs van de C-MOVE hierboven (de gateway stuurt als AE AIFIPOOL).
 scp:
-  port: 9999
-  aeTitle: "DICOMPROXY_A"
-  allowedCallingAeTitles: ["<JiveX-AE-titel>"]
+  port: 9999                        # pool.proxies[].port
+  aeTitle: "DICOMPROXY_A"           # pool.proxies[].aeTitle
+  allowedCallingAeTitles: ["AIFIPOOL"]
 
-# Waar de STOW-RS van de AIFI gateway terechtkomt: dezelfde JiveX, zodat A de studie
-# daarna voor proxy B kan ophalen.
+# De gateway levert niets meer af: geen upload target.
 uploadTarget:
-  enabled: true
-  host: "<JiveX-host>"
-  port: <JiveX-DICOM-poort>
-  aeTitle: "<JiveX-AE-titel>"
-  callingAeTitle: "DICOMPROXY_A"    # moet in JiveX als toegestane zender bekend zijn
+  enabled: false
 
 # Gepseudonimiseerde data heeft geen BSN: herschrijven uit, anders eist A bij elk
 # ophaalverzoek een X-Patient-BSN-header.
@@ -57,7 +52,6 @@ auth:
   wadoAcceptJwt: true               # proxy B haalt op met een OAuth2-token (client "proxy-b")
   wadoAcceptApiKey: false
   allowAnonymous: false
-  wadoAllowedCidrs: ["<IP-B>/32"]   # WADO/QIDO alleen vanaf proxy B (STOW van de gateway valt hier niet onder)
-  # Clients maak je aan op de admin-pagina (Clients); het secret wordt eenmalig getoond:
-  #   AIFI     - voor de AIFI gateway (STOW)   -> destination.clientId / clientSecret in gateway.yaml
-  #   proxy-b  - voor proxy B (WADO-pull)      -> wadoPassthrough.auth.clientId / clientSecret op B
+  wadoAllowedCidrs: ["<IP-B>/32"]   # WADO/QIDO alleen vanaf proxy B
+  # Client aanmaken op de admin-pagina (Clients); het secret wordt eenmalig getoond:
+  #   proxy-b  - voor proxy B (WADO-pull)  -> wadoPassthrough.auth.clientId / clientSecret op B

@@ -100,7 +100,7 @@ public final class JobStore implements AutoCloseable {
         p.setProperty("status", Status.RECEIVED.name());
         p.setProperty("studyUid", m.studyUid);
         p.setProperty("route", m.route);
-        p.setProperty("instances", Integer.toString(m.instanceCount()));
+        p.setProperty("instances", Integer.toString(m.expected));
         p.setProperty("receivedAt", Long.toString(System.currentTimeMillis()));
         p.setProperty("updatedAt", Long.toString(System.currentTimeMillis()));
         writeProps(tmp.resolve("state.properties"), p);

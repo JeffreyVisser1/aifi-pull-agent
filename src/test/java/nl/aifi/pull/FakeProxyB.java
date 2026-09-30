@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Stand-in for the receiving DICOM Web Proxy (B) over real HTTPS: OAuth2 token endpoint,
- * authenticated health probe and WADO-RS series / instance retrieve as multipart/related.
+ * authenticated health probe and WADO-RS study / series / instance retrieve as multipart/related.
  */
 final class FakeProxyB implements AutoCloseable {
 
@@ -88,15 +88,15 @@ final class FakeProxyB implements AutoCloseable {
         if (!authorized(ex)) { send(ex, 401, "application/json", "{}".getBytes()); return; }
         String path = ex.getRequestURI().getPath();
         requests.add(path);
-        String[] p = path.split("/");            // "", dicom-web, studies, {st}, series, {se}[, instances, {sop}]
-        if (p.length < 6 || !"series".equals(p[4])) { send(ex, 400, "text/plain", new byte[0]); return; }
+        String[] p = path.split("/");            // "", dicom-web, studies, {st}[, series, {se}[, instances, {sop}]]
+        if (p.length < 4 || (p.length > 4 && !"series".equals(p[4]))) { send(ex, 400, "text/plain", new byte[0]); return; }
         String st = p[3];
-        String se = p[5];
+        String se = p.length >= 6 ? p[5] : null;
         String sop = p.length >= 8 ? p[7] : null;
         List<byte[]> parts = new ArrayList<>();
         for (Map.Entry<String, Object[]> e : instances.entrySet()) {
             Object[] v = e.getValue();
-            if (!st.equals(v[0]) || !se.equals(v[1]) || withheld.contains(e.getKey())) continue;
+            if (!st.equals(v[0]) || (se != null && !se.equals(v[1])) || withheld.contains(e.getKey())) continue;
             if (sop != null && !sop.equals(e.getKey())) continue;
             parts.add((byte[]) v[2]);
         }

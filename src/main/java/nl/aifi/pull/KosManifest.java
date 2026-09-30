@@ -11,27 +11,34 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * What a "study ready" KOS asks for: the study, the route, and per series the SOP instances
- * listed in the Current Requested Procedure Evidence Sequence. The route comes from the Key
- * Object Description text the AIFI gateway writes ({@code "AIFI route=ai-thorax; ..."}).
+ * What a pull request asks for. The KOS starts as the AIFI gateway's trigger to JiveX; JiveX
+ * pseudonymizes it with its own profile before routing it here, so the agent relies only on
+ * what survives that:
+ * <ul>
+ *   <li>the StudyInstanceUID (JiveX's pseudonym, the same UID the gateway pool uses);</li>
+ *   <li>the route: Key Object Description {@code "AIFI route=...; instances=n"}, else the Series
+ *       Description {@code "AIFI route=..."}, else empty (then the agent reads it from the
+ *       retrieved instances);</li>
+ *   <li>the number of instances: from the description, else counted in the evidence sequence
+ *       (the UIDs there may have been re-mapped), else unknown (0).</li>
+ * </ul>
  */
 public final class KosManifest {
 
     public final String kosUid;
     public final String studyUid;
     public final String route;
-    /** Series UID → SOP instance UIDs, in KOS order. */
-    public final Map<String, Set<String>> series;
+    /** Instances the gateway received for this request; 0 = unknown. */
+    public final int expected;
+    /** Whether the KOS carries a mark of the AIFI gateway. */
+    public final boolean fromAifi;
 
-    private KosManifest(String kosUid, String studyUid, String route, Map<String, Set<String>> series) {
+    private KosManifest(String kosUid, String studyUid, String route, int expected, boolean fromAifi) {
         this.kosUid = kosUid;
         this.studyUid = studyUid;
         this.route = route;
-        this.series = series;
-    }
-
-    public int instanceCount() {
-        return series.values().stream().mapToInt(Set::size).sum();
+        this.expected = expected;
+        this.fromAifi = fromAifi;
     }
 
     /** @throws IllegalArgumentException when the object is not a usable pull request */
@@ -42,48 +49,61 @@ public final class KosManifest {
         String kosUid = kos.getString(Tag.SOPInstanceUID);
         String studyUid = kos.getString(Tag.StudyInstanceUID);
         if (!isUid(kosUid) || !isUid(studyUid)) throw new IllegalArgumentException("missing or invalid Study/SOP Instance UID");
-        Map<String, Set<String>> series = new LinkedHashMap<>();
-        Sequence studies = kos.getSequence(Tag.CurrentRequestedProcedureEvidenceSequence);
-        if (studies != null) {
-            for (Attributes st : studies) {
-                if (!studyUid.equals(st.getString(Tag.StudyInstanceUID))) {
-                    throw new IllegalArgumentException("the evidence references another study than the KOS itself");
-                }
-                Sequence ser = st.getSequence(Tag.ReferencedSeriesSequence);
-                if (ser == null) continue;
-                for (Attributes se : ser) {
-                    String seriesUid = se.getString(Tag.SeriesInstanceUID);
-                    if (!isUid(seriesUid)) throw new IllegalArgumentException("invalid Series Instance UID in the evidence");
-                    Set<String> sops = series.computeIfAbsent(seriesUid, k -> new LinkedHashSet<>());
-                    Sequence refs = se.getSequence(Tag.ReferencedSOPSequence);
-                    if (refs == null) continue;
-                    for (Attributes r : refs) {
-                        String sop = r.getString(Tag.ReferencedSOPInstanceUID);
-                        if (!isUid(sop)) throw new IllegalArgumentException("invalid SOP Instance UID in the evidence");
-                        sops.add(sop);
-                    }
-                }
-            }
+
+        Map<String, String> text = description(kos);
+        String route = text.getOrDefault("route", "");
+        String seriesDescription = kos.getString(Tag.SeriesDescription, "");
+        if (route.isEmpty() && seriesDescription.startsWith("AIFI route=")) {
+            route = seriesDescription.substring("AIFI route=".length()).trim();
         }
-        series.values().removeIf(Set::isEmpty);
-        if (series.isEmpty()) throw new IllegalArgumentException("the KOS references no instances");
-        return new KosManifest(kosUid, studyUid, route(kos), series);
+        if (!route.isEmpty() && !route.matches("[a-z0-9][a-z0-9-]{0,31}")) {
+            throw new IllegalArgumentException("invalid route name '" + route + "'");
+        }
+        int expected = 0;
+        try {
+            expected = Integer.parseInt(text.getOrDefault("instances", "0"));
+        } catch (NumberFormatException ignore) { /* counted below */ }
+        if (expected <= 0) expected = evidenceCount(kos);
+        boolean fromAifi = !text.isEmpty() || seriesDescription.startsWith("AIFI ")
+                || kos.getString(Tag.Manufacturer, "").startsWith("AIFI ");
+        return new KosManifest(kosUid, studyUid, route, Math.max(0, expected), fromAifi);
     }
 
-    /** The route named in the Key Object Description, or "" when there is none. */
-    static String route(Attributes kos) {
+    /** Key/value pairs of the Key Object Description text written by the gateway. */
+    static Map<String, String> description(Attributes kos) {
+        Map<String, String> out = new LinkedHashMap<>();
         Sequence content = kos.getSequence(Tag.ContentSequence);
-        if (content == null) return "";
+        if (content == null) return out;
         for (Attributes item : content) {
             if (!"TEXT".equals(item.getString(Tag.ValueType))) continue;
             String text = item.getString(Tag.TextValue, "");
             if (!text.startsWith("AIFI ")) continue;
             for (String part : text.substring(5).split(";")) {
                 String[] kv = part.trim().split("=", 2);
-                if (kv.length == 2 && kv[0].trim().equals("route")) return kv[1].trim();
+                if (kv.length == 2) out.put(kv[0].trim(), kv[1].trim());
             }
         }
-        return "";
+        return out;
+    }
+
+    /** Distinct instances referenced in the Current Requested Procedure Evidence Sequence. */
+    static int evidenceCount(Attributes kos) {
+        Set<String> sops = new LinkedHashSet<>();
+        Sequence studies = kos.getSequence(Tag.CurrentRequestedProcedureEvidenceSequence);
+        if (studies == null) return 0;
+        for (Attributes st : studies) {
+            Sequence series = st.getSequence(Tag.ReferencedSeriesSequence);
+            if (series == null) continue;
+            for (Attributes se : series) {
+                Sequence refs = se.getSequence(Tag.ReferencedSOPSequence);
+                if (refs == null) continue;
+                for (Attributes r : refs) {
+                    String sop = r.getString(Tag.ReferencedSOPInstanceUID);
+                    if (sop != null) sops.add(sop);
+                }
+            }
+        }
+        return sops.size();
     }
 
     public static boolean isUid(String uid) {

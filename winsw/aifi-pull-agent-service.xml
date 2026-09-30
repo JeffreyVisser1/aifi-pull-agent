@@ -1,7 +1,7 @@
 <service>
   <id>AifiPullAgent</id>
   <name>AIFI Pull Agent</name>
-  <description>Receives "study ready" KOS notifications, retrieves the studies with WADO-RS through the DICOM Web Proxy and C-STOREs them to the destination.</description>
+  <description>Receives the AIFI KOS pull requests routed by JiveX, retrieves the studies with WADO-RS through the DICOM Web Proxy and C-STOREs them to the destination.</description>
   <executable>java</executable>
   <!-- ExitOnOutOfMemoryError: a JVM in trouble exits and is restarted instead of limping on. -->
   <arguments>-Dfile.encoding=UTF-8 -XX:+ExitOnOutOfMemoryError -jar "%BASE%\aifi-pull-agent.jar" run</arguments>

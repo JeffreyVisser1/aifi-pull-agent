@@ -25,6 +25,7 @@ class AgentEndToEndTest {
     private static final String STUDY = "1.2.276.0.50.10528480.77";
     private static final String SERIES = STUDY + ".1";
     private static final String KOS = "2.25.7700001";
+    private static final String STUDY_PATH = "/dicom-web/studies/" + STUDY;
 
     @TempDir Path tmp;
     private FakeProxyB proxy;
@@ -36,7 +37,8 @@ class AgentEndToEndTest {
     void setUp() throws Exception {
         proxy = new FakeProxyB();
         dest = new Dicom.CapturingScp("AI_PACS");
-        for (int i = 1; i <= 4; i++) proxy.add(Dicom.ct(STUDY, SERIES, SERIES + "." + i));   // .4 is not in the KOS
+        for (int i = 1; i <= 3; i++) proxy.add(Dicom.ct(STUDY, SERIES, SERIES + "." + i, "ai-thorax"));
+        proxy.add(Dicom.ct("1.2.276.0.50.10528480.78", "1.2.276.0.50.10528480.78.1", "1.2.276.0.50.10528480.78.1.1", "main"));
         cfg = new Config();
         cfg.listener.bindAddress = "127.0.0.1";
         cfg.listener.port = Dicom.freePort();
@@ -46,6 +48,7 @@ class AgentEndToEndTest {
         cfg.source.clientSecret = FakeProxyB.CLIENT_SECRET;
         cfg.source.trustCertPath = TestPki.pem("node");
         cfg.destinations.add(destination("ai-pacs", "*", dest.port, "AI_PACS"));
+        cfg.retry.firstAttemptDelaySeconds = 0;
         cfg.retry.initialDelaySeconds = 1;
         cfg.spool.dir = tmp.resolve("spool").toString();
         cfg.spool.minFreeMb = 1;
@@ -74,9 +77,10 @@ class AgentEndToEndTest {
         agent.start();
     }
 
-    private static Attributes kos(String route, String... sops) {
+    /** The KOS for the three instances; {@code route == null}: as JiveX forwards it, without the route. */
+    private static Attributes kos(String route) {
         Map<String, List<String>> m = new LinkedHashMap<>();
-        m.put(SERIES, List.of(sops));
+        m.put(SERIES, List.of("2.25.1", "2.25.2", "2.25.3"));   // JiveX re-maps these UIDs; only the count matters
         return Dicom.kos(KOS, route, STUDY, m);
     }
 
@@ -88,80 +92,112 @@ class AgentEndToEndTest {
         return !Files.exists(tmp.resolve("spool/jobs/" + KOS));
     }
 
+    private Properties state() throws Exception {
+        return agent.store().readState(KOS);
+    }
+
     @Test
-    void pullsExactlyTheListedInstancesAndStoresThem() throws Exception {
+    void pullsTheWholeStudyAndStoresIt() throws Exception {
         start();
-        assertEquals(0, Dicom.send(cfg.listener.port, "AIFIPULL", kos("main", SERIES + ".1", SERIES + ".2", SERIES + ".3")));
+        assertEquals(0, Dicom.send(cfg.listener.port, "AIFIPULL", kos("main")));
 
         await(this::jobGone, "job done");
-        assertEquals(Set.of(SERIES + ".1", SERIES + ".2", SERIES + ".3"), received(dest), "only the instances in the KOS");
+        assertEquals(Set.of(SERIES + ".1", SERIES + ".2", SERIES + ".3"), received(dest), "the study, nothing else");
         assertEquals(3, dest.received.size(), "each once");
-        assertEquals(List.of("/dicom-web/studies/" + STUDY + "/series/" + SERIES), proxy.requests, "one series retrieve");
+        assertEquals(List.of(STUDY_PATH), proxy.requests, "one study retrieve");
         assertEquals(1, proxy.tokensIssued.get());
     }
 
     @Test
-    void waitsForInstancesNotYetAvailableAndFetchesOnlyThose() throws Exception {
-        proxy.withheld.add(SERIES + ".3");                   // not yet at proxy A
+    void waitsUntilTheGatewayOffersTheStudy() throws Exception {
+        for (int i = 1; i <= 3; i++) proxy.withheld.add(SERIES + "." + i);   // not yet in the gateway pool
         start();
-        Dicom.send(cfg.listener.port, "AIFIPULL", kos("main", SERIES + ".1", SERIES + ".2", SERIES + ".3"));
+        Dicom.send(cfg.listener.port, "AIFIPULL", kos("main"));
 
-        await(() -> dest.received.size() == 2, "the available instances are stored right away");
         await(() -> {
-            try { return JobStore.status(agent.store().readState(KOS)) == JobStore.Status.RETRY_WAIT; } catch (Exception e) { return false; }
+            try { return JobStore.status(state()) == JobStore.Status.RETRY_WAIT; } catch (Exception e) { return false; }
         }, "job waits");
-        Properties st = agent.store().readState(KOS);
-        assertTrue(st.getProperty("lastError").contains("not (yet) available"), st.getProperty("lastError"));
+        assertTrue(state().getProperty("lastError").contains("not (yet) available"), state().getProperty("lastError"));
 
         proxy.withheld.clear();
-        await(this::jobGone, "job done after the instance appeared");
-        assertEquals(3, dest.received.size(), "no instance stored twice");
-        assertTrue(proxy.requests.contains("/dicom-web/studies/" + STUDY + "/series/" + SERIES + "/instances/" + SERIES + ".3"),
-                "only the missing instance is fetched again: " + proxy.requests);
+        await(this::jobGone, "job done once the study is there");
+        assertEquals(3, dest.received.size());
     }
 
     @Test
-    void routeSelectsTheDestination() throws Exception {
-        try (Dicom.CapturingScp thorax = new Dicom.CapturingScp("THORAX_AI")) {
-            cfg.destinations.add(destination("thorax-ai", "ai-thorax", thorax.port, "THORAX_AI"));
+    void fewerInstancesThanAnnouncedAreRetrievedAgainWithoutDuplicates() throws Exception {
+        proxy.withheld.add(SERIES + ".3");
+        start();
+        Dicom.send(cfg.listener.port, "AIFIPULL", kos("main"));
+
+        await(() -> dest.received.size() == 2, "what came back is stored right away");
+        await(() -> {
+            try { return state().getProperty("lastError", "").contains("only 2 of 3"); } catch (Exception e) { return false; }
+        }, "job explains what is missing");
+
+        proxy.withheld.clear();
+        await(this::jobGone, "job done after the second retrieve");
+        assertEquals(3, dest.received.size(), "no instance stored twice");
+        assertEquals(Set.of(SERIES + ".1", SERIES + ".2", SERIES + ".3"), received(dest));
+    }
+
+    @Test
+    void routeInTheKosSelectsTheDestination() throws Exception {
+        try (Dicom.CapturingScp mamma = new Dicom.CapturingScp("MAMMA_AI")) {
+            cfg.destinations.add(destination("mamma-ai", "ai-mamma", mamma.port, "MAMMA_AI"));
             start();
-            Dicom.send(cfg.listener.port, "AIFIPULL", kos("ai-thorax", SERIES + ".1"));
+            Dicom.send(cfg.listener.port, "AIFIPULL", kos("ai-mamma"));
             await(this::jobGone, "job done");
-            assertEquals(Set.of(SERIES + ".1"), received(thorax));
+            assertEquals(3, mamma.received.size(), "the KOS route wins over the route in the instances");
             assertTrue(dest.received.isEmpty(), "the catch-all destination got nothing");
         }
     }
 
     @Test
-    void unknownRouteWaitsWithAClearMessage() throws Exception {
+    void routeIsReadFromTheInstancesWhenJivexRemovedItFromTheKos() throws Exception {
+        try (Dicom.CapturingScp thorax = new Dicom.CapturingScp("THORAX_AI")) {
+            cfg.destinations.add(destination("thorax-ai", "ai-thorax", thorax.port, "THORAX_AI"));
+            start();
+            Dicom.send(cfg.listener.port, "AIFIPULL", kos(null));
+            await(this::jobGone, "job done");
+            assertEquals(3, thorax.received.size());
+            assertTrue(dest.received.isEmpty());
+        }
+    }
+
+    @Test
+    void unknownRouteKeepsTheInstancesAndSaysWhy() throws Exception {
         cfg.destinations.get(0).route = "ai-mamma";
         start();
-        Dicom.send(cfg.listener.port, "AIFIPULL", kos("ai-thorax", SERIES + ".1"));
+        Dicom.send(cfg.listener.port, "AIFIPULL", kos("ai-thorax"));
         await(() -> {
-            try { return agent.store().readState(KOS).getProperty("lastError", "").contains("no destination configured for route 'ai-thorax'"); }
+            try { return state().getProperty("lastError", "").contains("no destination configured for route 'ai-thorax'"); }
             catch (Exception e) { return false; }
         }, "job explains the missing destination");
-        assertTrue(proxy.requests.isEmpty(), "nothing retrieved without a destination");
+        assertEquals(3, Files.list(agent.store().instancesDir(KOS)).count(), "retrieved instances kept for later");
     }
 
     @Test
     void aResentKosIsOneJob() throws Exception {
         start();
-        Attributes k = kos("main", SERIES + ".1");
+        Attributes k = kos("main");
         assertEquals(0, Dicom.send(cfg.listener.port, "AIFIPULL", k));
         await(this::jobGone, "job done");
         assertEquals(0, Dicom.send(cfg.listener.port, "AIFIPULL", k), "acknowledged again");
         Thread.sleep(1500);
         assertEquals(1, proxy.requests.size(), "a completed request is not pulled again: " + proxy.requests);
-        assertEquals(1, dest.received.size(), "no duplicate at the destination");
+        assertEquals(3, dest.received.size(), "no duplicate at the destination");
         assertTrue(jobGone());
     }
 
     @Test
-    void onlyKosDocumentsAreAccepted() throws Exception {
+    void onlyAifiKosDocumentsAreAccepted() throws Exception {
         start();
         int status = Dicom.send(cfg.listener.port, "AIFIPULL", Dicom.ct(STUDY, SERIES, SERIES + ".1"));
         assertEquals(-1, status, "CT image refused at association level");
+        Attributes foreign = kos(null);
+        foreign.remove(Tag.Manufacturer);                    // a key-image note from a radiologist, say
+        assertEquals(0xC000, Dicom.send(cfg.listener.port, "AIFIPULL", foreign), "KOS without AIFI marks refused");
         assertTrue(Files.list(tmp.resolve("spool/jobs")).findAny().isEmpty());
     }
 
@@ -170,16 +206,16 @@ class AgentEndToEndTest {
         int port = dest.port;
         dest.close();                                        // destination down
         start();
-        Dicom.send(cfg.listener.port, "AIFIPULL", kos("main", SERIES + ".1", SERIES + ".2"));
+        Dicom.send(cfg.listener.port, "AIFIPULL", kos("main"));
         await(() -> {
-            try { return Files.list(agent.store().instancesDir(KOS)).count() == 2; } catch (Exception e) { return false; }
+            try { return Files.list(agent.store().instancesDir(KOS)).count() == 3; } catch (Exception e) { return false; }
         }, "retrieved and kept on disk");
         agent.close();
         dest = new Dicom.CapturingScp("AI_PACS", port);
         agent = new Agent(cfg);
         agent.start();
         await(this::jobGone, "delivered after the restart");
-        assertEquals(2, dest.received.size());
+        assertEquals(3, dest.received.size());
         assertEquals(1, proxy.requests.size(), "not retrieved again: " + proxy.requests);
     }
 
@@ -187,9 +223,9 @@ class AgentEndToEndTest {
     void wrongSecretIsExplained() throws Exception {
         cfg.source.clientSecret = "wrong";
         start();
-        Dicom.send(cfg.listener.port, "AIFIPULL", kos("main", SERIES + ".1"));
+        Dicom.send(cfg.listener.port, "AIFIPULL", kos("main"));
         await(() -> {
-            try { return agent.store().readState(KOS).getProperty("lastError", "").contains("invalid_client"); } catch (Exception e) { return false; }
+            try { return state().getProperty("lastError", "").contains("invalid_client"); } catch (Exception e) { return false; }
         }, "invalid_client in the job");
     }
 
